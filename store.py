@@ -53,80 +53,75 @@ class GroceryStore:
 
        
     def assign_customer(self, customer):
-        """assign the customer to the LEGIT line with the fewest number of customers"""
-        l, k = [], []
-        if customer.number_of_items < 8:
-            for line in self._lines:
-                l.append(line.people_in_line)
-            l.sort()
-            for line in self._lines:
-                if line.people_in_line == l[0]:
-                    line.people_in_line += 1
-                    return line
+        """Assign the customer to the open line with the fewest customers.
+        
+        Express lines only accept customers with 7 or fewer items.
+        Returns the line the customer was assigned to.
+        
+        @type customer: Customer
+        @rtype: Line
+        """
+        eligible_lines = []
+        
+        # Determine which lines are eligible
+        if customer.number_of_items <= 7:
+            # Can use any open line
+            eligible_lines = [line for line in self._lines 
+                            if line.is_open and line.people_in_line < self._line_capacity]
+        else:
+            # Cannot use express lines
+            eligible_lines = [line for line in self._lines 
+                            if line.is_open and 
+                            not isinstance(line, ExpressLine) and 
+                            line.people_in_line < self._line_capacity]
+        
+        if not eligible_lines:
+            # Fallback: find any open line (shouldn't happen per spec)
+            eligible_lines = [line for line in self._lines if line.is_open]
+        
+        # Find line with fewest customers (lowest index if tie)
+        best_line = min(eligible_lines, key=lambda line: line.people_in_line)
+        
+        # Add customer to line
+        best_line.people_in_line += 1
+        if best_line.people_in_line > 1:
+            # Customer must wait - add to queue
+            best_line.queue.append(customer)
+        
+        return best_line
 
-        elif customer.number_of_items >= 8:
-            for line in self._lines:
-                if not isinstance(line, ExpressLine):
-                    k.append(line)
-            for item in k:
-                l.append(item.people_in_line)
-            l.sort()
-            for line in k:
-                if line.people_in_line == l[0]:
-                    line.people_in_line += 1
-                    return line
-
-    def update_customer_to_line(self,customer):
-        line = self.assign_customer(customer)
+    def update_customer_to_line(self, customer, line):
+        """Update the mapping of customer to their assigned line.
+        
+        @type customer: Customer
+        @type line: Line
+        @rtype: None
+        """
         self._customer_to_line[customer] = line
 
-
-    def get_event(self, filename):
-        m = PriorityQueue()
-        from event import create_event_list
-        for event in create_event_list(filename):
-            m.add(event)
-        return m
-
-    def get_next_customer(self, queue, customer):
-        """ compare customer to the customer in queue
-        """
-
-        for i in range(len(queue._items)):
-            if queue._items[i] == customer:
-                return queue._items[i+1]
-            else:
-                return None
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     def get_cashier_time(self, n):
+        """Calculate checkout time for cashier line.
         
+        @type n: int
+        @rtype: int
+        """
         return n + 7
 
     def get_express_time(self, n):
-        if n < 8:
-            raise Exception('more than 7 items, please go to another line')
-        return n+4
+        """Calculate checkout time for express line.
+        
+        @type n: int
+        @rtype: int
+        """
+        return n + 4
 
     def get_self_serve_time(self, n):
-
-        return 2*n + 1
+        """Calculate checkout time for self-serve line.
+        
+        @type n: int
+        @rtype: int
+        """
+        return 2 * n + 1
 
 
 class Customer:
@@ -148,25 +143,33 @@ class Line:
     Their checkout time for a customer with n items would be: n+7,n+4,2n+1 respectively
     They are referred by unique index(int)
     
+    === Attributes ===
+    @type people_in_line: int
+        Number of people currently in line
+    @type queue: list[Customer]
+        Queue of customers waiting in line (not including the one being served)
+    @type is_open: bool
+        Whether the line is open for new customers
     """
+    def __init__(self, people_in_line=0):
+        self.people_in_line = people_in_line
+        self.queue = []
+        self.is_open = True
 
 
 class CashierLine(Line):
     def __init__(self, people_in_line=0):
-
-        self.people_in_line = people_in_line
+        super().__init__(people_in_line)
 
 
 class ExpressLine(Line):
     def __init__(self, people_in_line=0):
-
-        self.people_in_line = people_in_line
+        super().__init__(people_in_line)
 
 
 class SelfServeLine(Line):
     def __init__(self, people_in_line=0):
-
-        self.people_in_line = people_in_line
+        super().__init__(people_in_line)
 
 
 if __name__ == '__main__':

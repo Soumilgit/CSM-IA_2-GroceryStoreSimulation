@@ -61,30 +61,52 @@ class GroceryStoreSimulation:
             'max_wait': -1
         }
 
+        # Track all customers to count unique customers
+        all_customers = set()
+
+        # Load initial events from file
         initial_events = create_event_list(event_file)
 
-        # TODO: Process all of the events, collecting statistics along the way.
-        #add events to self._events
+        # Add all initial events to priority queue
         for event in initial_events:
             self._events.add(event)
+            # Count unique customers from initial join events
+            if isinstance(event, EventJoin):
+                all_customers.add(event.customer)
 
+        # Process events
         while not self._events.is_empty():
             event = self._events.remove()
-            if isinstance(event, EventJoin):
-                new_events = event.do(self._store, event.customer)
-            elif isinstance(event, EventClose):
-                new_events = event.do(self._store)
-            elif isinstance(event, EventBegin):
-                new_events = event.do(self._store, event.customer)
-            elif isinstance(event, EventFinish):
-                new_events = event.do(self._store, event.customer, event_file)
             
+            # Update total_time to be the timestamp of last event
+            stats['total_time'] = event.timestamp
+            
+            # Process the event and get any spawned events
+            new_events = event.do(self._store)
+            
+            # Track customer finish times and calculate wait times
+            if isinstance(event, EventFinish):
+                customer = event.customer
+                if hasattr(customer, 'join_time') and hasattr(customer, 'finish_time'):
+                    wait_time = customer.finish_time - customer.join_time
+                    if wait_time > stats['max_wait']:
+                        stats['max_wait'] = wait_time
+            
+            # Add spawned events to queue
             if new_events:
                 if isinstance(new_events, list):
-                    for item in new_events:
-                        self._events.add(item)
+                    for new_event in new_events:
+                        self._events.add(new_event)
+                        # Track customers from spawned join events
+                        if isinstance(new_event, EventJoin):
+                            all_customers.add(new_event.customer)
                 else:
                     self._events.add(new_events)
+                    if isinstance(new_events, EventJoin):
+                        all_customers.add(new_events.customer)
+
+        # Set final customer count
+        stats['num_customers'] = len(all_customers)
 
         return stats
 

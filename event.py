@@ -185,19 +185,30 @@ class EventJoin(Event):
     @type customer: Customer
         A customer
     """
-    def __init__(self,timestamp,customer):
+    def __init__(self, timestamp, customer):
         super().__init__(timestamp)
         self.timestamp = timestamp
         self.customer = customer
 
-    def do(self, store, customer):
-        """a new checking out event is added when join an empty line"""
-        new_event = []
+    def do(self, store):
+        """Process customer joining a line. Spawn EventBegin if line was empty.
+        
+        @type store: GroceryStore
+        @rtype: list[Event]
+        """
+        # Track the customer's initial join time for wait calculation
+        if not hasattr(self.customer, 'join_time'):
+            self.customer.join_time = self.timestamp
+        
+        # Assign customer to best available line
         line = store.assign_customer(self.customer)
-        if line.people_in_line == 0:
-            new_event.append(EventBegin(self.timestamp, customer))
-            return new_event
-        return None
+        store.update_customer_to_line(self.customer, line)
+        
+        # If customer is first in line, they start checkout immediately
+        if line.people_in_line == 1:
+            return [EventBegin(self.timestamp, self.customer)]
+        
+        return []
 
 
 class EventBegin(Event):
@@ -216,22 +227,30 @@ class EventBegin(Event):
         self.timestamp = timestamp
         self.customer = customer
 
-
-
-    def do(self,store,customer):
-        """ if a customer begins checking out, a new"finish checking out" event is added
-            with the stamp = "begin" timestamp + time spend on check out """
-        new_event = []
-        line = store._customer_to_line[customer]
-        n = customer.number_of_items
-        if isinstance(line, cashierline):
+    def do(self, store):
+        """Customer begins checkout, spawn EventFinish with service time added.
+        
+        @type store: GroceryStore
+        @rtype: list[Event]
+        """
+        line = store._customer_to_line.get(self.customer)
+        if not line:
+            return []
+        
+        n = self.customer.number_of_items
+        
+        # Calculate service time based on line type
+        if isinstance(line, CashierLine):
             checkout_time = store.get_cashier_time(n)
-        elif isinstance(line, expressline):
+        elif isinstance(line, ExpressLine):
             checkout_time = store.get_express_time(n)
-        elif isinstance(line, selfserveline):
+        elif isinstance(line, SelfServeLine):
             checkout_time = store.get_self_serve_time(n)
-        new_event = EventFinish(checkout_time+self.timestamp, customer)
-        return new_event
+        else:
+            checkout_time = n + 7  # Default
+        
+        finish_time = self.timestamp + checkout_time
+        return [EventFinish(finish_time, self.customer)]
 
 
 
@@ -245,23 +264,33 @@ class EventFinish(Event):
         A customer
     """
 
-    def __init__(self,timestamp):
+    def __init__(self, timestamp, customer):
         super().__init__(timestamp)
-
         self.timestamp = timestamp
         self.customer = customer
 
-    def do(self,store,customer,file):
-        """A customer finishes checking out , the next customer in the line(if there is one
-           gets a "begin checking out " event with the same timestamp as the "finish" event"""
-        line = store._customer_to_line[customer]
+    def do(self, store):
+        """Customer finishes checkout. Next customer in line gets EventBegin.
+        
+        @type store: GroceryStore
+        @rtype: list[Event]
+        """
+        line = store._customer_to_line.get(self.customer)
+        if not line:
+            return []
+        
+        # Record finish time for wait calculation
+        self.customer.finish_time = self.timestamp
+        
+        # Remove customer from line
         line.people_in_line -= 1
-        queue = store.get_event(file)
-        next_customer = store.get_next_customer(queue, customer)
-        if next_customer != None:
-            new_event = EventBegin(customer.timestamp, next_customer)
-            return new_event
-        return None
+        
+        # Get next customer in line (if any) and start their checkout
+        if line.queue and len(line.queue) > 0:
+            next_customer = line.queue.pop(0)
+            return [EventBegin(self.timestamp, next_customer)]
+        
+        return []
 
 class EventClose(Event):
     """A subclass of  Event.
@@ -270,19 +299,53 @@ class EventClose(Event):
     === Attributes ===
     @type timestamp: int
         A timestamp for this event.
-    @type customer: Customer
-        A customer
+    @type line_index: int
+        Index of the line that is closing
     """
 
-    def __init__(self, timestamp):
+    def __init__(self, timestamp, line_index):
         super().__init__(timestamp)
         self.timestamp = timestamp
+        self.line_index = line_index
 
     def __repr__(self):
-        return "EventClose({})".format(repr(self.timestamp))
+        return "EventClose({}, {})".format(repr(self.timestamp), repr(self.line_index))
 
-    def do(self,store):
-        """ customer join other lines, timestamp updated"""
+    def do(self, store):
+        """Close a line and reassign customers to other lines.
+        
+        Customers are spawned new EventJoin events spaced 1 second apart,
+        with the last customer having the earliest event (same as close time).
+        The first customer in line stays and continues checkout.
+        
+        @type store: GroceryStore
+        @rtype: list[Event]
+        """
+        if self.line_index < 0 or self.line_index >= len(store._lines):
+            return []
+        
+        line = store._lines[self.line_index]
+        line.is_open = False  # Mark line as closed
+        
+        # Get all customers except the first one (who is being served)
+        if not hasattr(line, 'queue') or not line.queue:
+            return []
+        
+        customers_to_reassign = line.queue[:]  # Copy the queue
+        line.queue = []  # Clear the queue
+        
+        # Create new join events for each customer, spaced 1 second apart
+        # Last customer in line gets earliest timestamp (close time)
+        new_events = []
+        num_customers = len(customers_to_reassign)
+        
+        for i, customer in enumerate(customers_to_reassign):
+            # Last customer (highest index) gets timestamp = close time
+            # Earlier customers get later timestamps
+            event_time = self.timestamp + (num_customers - 1 - i)
+            new_events.append(EventJoin(event_time, customer))
+        
+        return new_events
 
 
 
@@ -312,10 +375,11 @@ def create_event_list(filename):
 
             tokens = line.split()
             if tokens[1] == 'Arrive':
-                customer = Customer(tokens[2],int(tokens[-1]))
-                events.append(EventJoin(int(tokens[0]),customer))
-            else:
-                events.append(EventClose(int(tokens[0])))
+                customer = Customer(tokens[2], int(tokens[-1]))
+                events.append(EventJoin(int(tokens[0]), customer))
+            elif tokens[1] == 'Close':
+                line_index = int(tokens[2])
+                events.append(EventClose(int(tokens[0]), line_index))
 
     return events
 
